@@ -566,18 +566,24 @@ func (tree *Rtree) NearestNeighbors(k int, p Point, filters ...Filter) []Spatial
 		dists[i] = math.MaxFloat64
 		objs[i] = nil
 	}
-	objs, _ = tree.nearestNeighbors(k, p, tree.root, dists, objs, filters...)
+
+	objs, _, _ = tree.nearestNeighbors(k, p, tree.root, dists, objs, filters...)
 	return objs
 }
 
 // insert obj into nearest and return the first k elements in increasing order.
-func insertNearest(k int, dists []float64, nearest []Spatial, dist float64, obj Spatial) ([]float64, []Spatial) {
+func insertNearest(k int, dists []float64, nearest []Spatial, dist float64, obj Spatial, filters []Filter) ([]float64, []Spatial, bool) {
 	i := 0
 	for i < k && dist >= dists[i] {
 		i++
 	}
 	if i >= k {
-		return dists, nearest
+		return dists, nearest, false
+	}
+
+	refuse, abort := applyFilters(nearest, obj, filters)
+	if refuse {
+		return dists, nearest, abort
 	}
 
 	left, right := dists[:i], dists[i:k-1]
@@ -592,28 +598,28 @@ func insertNearest(k int, dists []float64, nearest []Spatial, dist float64, obj 
 	updatedNearest[i] = obj
 	copy(updatedNearest[i+1:], rightObjs)
 
-	return updatedDists, updatedNearest
+	return updatedDists, updatedNearest, abort
 }
 
-func (tree *Rtree) nearestNeighbors(k int, p Point, n *node, dists []float64, nearest []Spatial, filters ...Filter) ([]Spatial, []float64) {
+func (tree *Rtree) nearestNeighbors(k int, p Point, n *node, dists []float64, nearest []Spatial, filters ...Filter) ([]Spatial, []float64, bool) {
+	var abort bool
 	if n.leaf {
 		for _, e := range n.entries {
-			refuse, abort := applyFilters(nearest, e.obj, filters)
-			if !refuse {
-				dist := math.Sqrt(p.minDist(e.bb))
-				dists, nearest = insertNearest(k, dists, nearest, dist, e.obj)
-			}
-
+			dist := math.Sqrt(p.minDist(e.bb))
+			dists, nearest, abort = insertNearest(k, dists, nearest, dist, e.obj, filters)
 			if abort {
-				return nearest, dists
+				break
 			}
 		}
 	} else {
 		branches, branchDists := sortEntries(p, n.entries)
 		branches = pruneEntries(p, branches, branchDists)
 		for _, e := range branches {
-			nearest, dists = tree.nearestNeighbors(k, p, e.child, dists, nearest)
+			nearest, dists, abort = tree.nearestNeighbors(k, p, e.child, dists, nearest, filters...)
+			if abort {
+				break
+			}
 		}
 	}
-	return nearest, dists
+	return nearest, dists, abort
 }
